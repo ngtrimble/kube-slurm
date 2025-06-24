@@ -1,5 +1,5 @@
 #!/bin/bash
-## Manage Jupyter Job Pods from Slurm
+## Manage cryosparc Job Pods from Slurm
 #source ../config/settings.sh
 
 # Print Slurm ENV Vars
@@ -23,12 +23,13 @@ KUBE_GPU_COUNT=${SLURM_GPUS}
 KUBE_INIT_TIMEOUT=${KUBE_INIT_TIMEOUT:=600}
 KUBE_POD_MONITOR_INTERVAL=${KUBE_POD_MONITOR_INTERVAL:=10}
 KUBE_NAMESPACE=${KUBE_NAMESPACE:=slurm}
-KUBE_CLUSTER_DNS=${KUBE_CLUSTER_DNS:=erisxdl.partners.org}
-KUBE_INGRESS_PREFIX="/jupyter"
-KUBE_TARGET_PORT=${KUBE_TARGET_PORT:=8888}
+KUBE_CLUSTER_DNS=${KUBE_CLUSTER_DNS:=cryosparc.erisxdl.partners.org}
+KUBE_INGRESS_PREFIX="/cryosparc"
+KUBE_TARGET_PORT=${KUBE_TARGET_PORT:=39000}
 USER_HOME=${HOME}
 KUBE_DATA_VOLUME=${KUBE_DATA_VOLUME}
 KUBE_PERCENT_OF_NODE_LIMIT=0.5
+
 
 # Setup Kubeconfig
 export KUBECONFIG=${KUBECONFIG:=/data/erisxdl/kube-slurm/config/kube.config}
@@ -50,6 +51,7 @@ echo "KUBE_NAMESPACE: ${KUBE_NAMESPACE}"
 echo "KUBE_CLUSTER_DNS: ${KUBE_CLUSTER_DNS}"
 echo "KUBE_INGRESS_PREFIX: ${KUBE_INGRESS_PREFIX}"
 echo "KUBE_TARGET_PORT: ${KUBE_TARGET_PORT}"
+echo "KUBE_JOB_USER:${KUBE_JOB_USER}"
 echo "User Home: ${USER_HOME}"
 
 
@@ -59,7 +61,7 @@ function log () {
 }
 
 ## Manage Cleanup for Job Signals
-## The ordering is important, clear pod last
+## The ordering is important, clear pod last.
 WATCH_POD=true
 function cleanup () {
   log "Cleaning up resources"
@@ -138,7 +140,7 @@ else
 fi
 
 ## Create Service
-log "Creating Notebook ClusterIP Service"
+log "Creating CryoSparc Session ClusterIP Service"
 cat <<EOF | kubectl create -n ${KUBE_NAMESPACE} -f -
 ---
 apiVersion: v1
@@ -159,8 +161,8 @@ spec:
 EOF
 
 ## Generate Random Login Token
-JUPYTER_TOKEN=$(openssl rand -hex 24)
-log "Generated Jupyter Token: '${JUPYTER_TOKEN}'"
+CRYOSPARC_TOKEN=$(openssl rand -hex 24)
+log "Generated cryosparc Token: '${CRYOSPARC_TOKEN}'"
 
 ## Create Ingress
 log "Creating Notebook Ingress"
@@ -170,23 +172,28 @@ apiVersion: networking.k8s.io/v1beta1
 kind: Ingress
 metadata:
   name: ${KUBE_JOB_NAME}
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: 8m
 spec:
+  tls:
+  - hosts:
+    - cryosparc.erisxdl.partners.org
+    secretName: cryosparc-2024-erisxdl-partners-org
   rules:
-  - host: ${KUBE_CLUSTER_DNS}
+#  - host: "${KUBE_JOB_NAME}.${KUBE_CLUSTER_DNS}"
+  - host: "${KUBE_CLUSTER_DNS}"
     http:
       paths:
-      - path: "${KUBE_INGRESS_PREFIX}/${KUBE_JOB_NAME}"
+      - path: "/"
         backend:
           serviceName: ${KUBE_JOB_NAME}
           servicePort: ${KUBE_TARGET_PORT}
 EOF
 
-## Generate Notebook URL (Ingress)
-JUPYTER_URL="https://${KUBE_CLUSTER_DNS}${KUBE_INGRESS_PREFIX}/${KUBE_JOB_NAME}?token=${JUPYTER_TOKEN}"
+## Generate Session URL (Ingress)
+#CRYOSPARC_URL="https://${KUBE_JOB_NAME}.${KUBE_CLUSTER_DNS}?token=${CRYOSPARC_TOKEN}"
+CRYOSPARC_URL="https://${KUBE_CLUSTER_DNS}?token=${CRYOSPARC_TOKEN}"
+#CRYOSPARC_URL="https://${KUBE_CLUSTER_DNS}"
 echo "########################################################"
-echo "Your Jupyter Notebook URL will be: ${JUPYTER_URL}"
+echo "Your cryosparc session URL will be: ${CRYOSPARC_URL}"
 echo "########################################################"
 
 
@@ -201,6 +208,7 @@ metadata:
   labels:
     app: ${KUBE_JOB_NAME}
 spec:
+  hostname: cryosparc-host
   securityContext:
     runAsUser: ${KUBE_JOB_UID}
     runAsGroup: ${KUBE_JOB_FSGID}
@@ -216,6 +224,10 @@ spec:
   - name: etc
     hostPath:
       path: /etc
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 32Gi
   restartPolicy: Never
   containers:
   - name: ${KUBE_JOB_NAME}
@@ -223,11 +235,8 @@ spec:
     command: ["/bin/sh"]
     args:
       - "-c"
-      #- "sleep infinity"
-      # cf. https://alwynm.github.io/blog/cheatsheet/jupyter
-      # https://jupyter-notebook.readthedocs.io/en/4.x/public_server.html
-      # https://jupyter-notebook.readthedocs.io/en/4.x/config.html
-      - "jupyter lab  --notebook-dir=/work --ip=0.0.0.0 --no-browser --port=${KUBE_TARGET_PORT} --NotebookApp.token=${JUPYTER_TOKEN} --NotebookApp.password='' --NotebookApp.allow_origin='*' --NotebookApp.base_url=${KUBE_INGRESS_PREFIX}/${KUBE_JOB_NAME}"
+      # Initiate a bash shell and trigger cryosparcm, then persist the container.
+      - "bash ~/mybashrcCryosparc; sleep infinity"
     volumeMounts:
     - name: data
       mountPath: /work/data
@@ -241,11 +250,13 @@ spec:
     - mountPath: /etc/group
       name: etc
       subPath: group
+    - name: dshm
+      mountPath: /dev/shm
     env:
     - name: HOME
       value: "/home/${KUBE_JOB_USER}"
     ports:
-    - name: jupyter-http
+    - name: cryosparc-http
       containerPort: ${KUBE_TARGET_PORT}
       protocol: TCP
     ${KUBE_GPU_LIMIT}
