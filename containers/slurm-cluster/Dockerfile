@@ -61,6 +61,7 @@ RUN gpg --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4
     && gosu nobody true
 
 # Install Slurm
+# Ref. https://www.schedmd.com/slurm/installation-tutorial/
 RUN wget https://download.schedmd.com/slurm/slurm-$SLURM_VERSION.tar.bz2 && \
     rpmbuild -ta slurm-$SLURM_VERSION.tar.bz2 && \
     yum --nogpgcheck -y localinstall /root/rpmbuild/RPMS/x86_64/slurm-* && \
